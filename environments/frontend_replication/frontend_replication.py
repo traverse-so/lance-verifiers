@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 DEFAULT_VIEWPORT_WIDTH = 1280
 DEFAULT_VIEWPORT_HEIGHT = 800
-MAX_TURNS = 20
+MAX_TURNS = 5
 
 SYSTEM_PROMPT = """You are an expert frontend engineer. Your task is to replicate a target website as closely as possible using only HTML, CSS, and JavaScript in a single index.html file.
 
@@ -45,11 +45,17 @@ On each turn, write or update your HTML code. You will then see a screenshot of 
 
 Rules:
 - Write everything in a single index.html file (inline CSS and JS are fine)
-- For images and logos, use colored placeholder divs with the correct dimensions
-- Match the layout, typography, colors, spacing, and overall structure as closely as possible
-- Do NOT use external resources (CDNs, Google Fonts via URL, external images)
+- Do NOT use external resources (CDNs, Google Fonts via URL, external images, SVGs from URLs)
 - Use system fonts: Arial, Helvetica, sans-serif, serif, monospace
+- Match the layout, typography, colors, spacing, and overall structure as closely as possible
 - When you are satisfied with your replication, include the exact string "DONE" at the end of your message
+
+Handling images, logos, and complex visuals:
+- The description marks non-codeable elements with [IMAGE: ...]. These are images, graphics, or complex UI mockups that CANNOT be replicated with HTML/CSS alone.
+- For ANY element marked [IMAGE]: use a simple colored <div> placeholder with approximate dimensions and a matching background color. Add a short text label inside (e.g., "Product Screenshot"). Do NOT attempt to recreate these visually — just use a placeholder box.
+- For logos: use a placeholder div with the brand name as text, styled to approximate size and color.
+- For icons: use simple Unicode characters (e.g., "→", "✓", "⚡") — do NOT draw SVG icons.
+- Focus your effort on layout, text content, colors, and spacing — not on recreating images or complex graphics.
 
 Output your HTML inside a code block:
 ```html
@@ -123,7 +129,7 @@ async def render_html_playwright(
         page = await browser.new_page(viewport={"width": width, "height": height})
         await page.set_content(html, wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(500)
-        screenshot_bytes = await page.screenshot(full_page=False)
+        screenshot_bytes = await page.screenshot(full_page=True, animations="disabled")
         await browser.close()
         return screenshot_bytes
 
@@ -141,16 +147,78 @@ class FrontendReplicationEnv(vf.MultiTurnEnv):
     3. Environment renders HTML in headless Chrome, screenshots it
     4. Model sees its rendering vs target, refines
     5. Repeat until model says DONE or max_turns reached
+
+    Turn-level rewards:
+        Each trajectory step receives a Design2Code score as its reward,
+        enabling MT-GRPO-style per-turn credit assignment. The RL trainer
+        uses these per-step rewards to compute fine-grained advantages
+        rather than relying solely on the sparse final-turn score.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, allow_early_stop: bool = True, **kwargs):
         kwargs.setdefault("max_turns", MAX_TURNS)
         super().__init__(**kwargs)
+        self.allow_early_stop = allow_early_stop
         self.add_rubric(FrontendReplicationMonitorRubric())
+        self._browser = None
+        self._playwright = None
+
+    async def _get_browser(self):
+        """Get or create a persistent browser instance."""
+        if self._browser is None or not self._browser.is_connected():
+            from playwright.async_api import async_playwright
+
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+            )
+            logger.info("Launched persistent Playwright browser")
+        return self._browser
+
+    @vf.teardown
+    async def teardown_browser(self):
+        """Close the persistent browser on environment shutdown."""
+        if self._browser is not None:
+            try:
+                await self._browser.close()
+            except Exception as e:
+                logger.warning(f"Browser close error: {e}")
+            self._browser = None
+        if hasattr(self, "_playwright") and self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception as e:
+                logger.warning(f"Playwright stop error: {e}")
+            self._playwright = None
+        logger.info("Tore down persistent Playwright browser")
+
+    async def render_html(
+        self,
+        html: str,
+        width: int = DEFAULT_VIEWPORT_WIDTH,
+        height: int = DEFAULT_VIEWPORT_HEIGHT,
+    ) -> bytes:
+        """Render HTML to PNG bytes using the persistent browser."""
+        browser = await self._get_browser()
+        page = await browser.new_page(viewport={"width": width, "height": height})
+        try:
+            await page.set_content(html, wait_until="networkidle", timeout=30000)
+            await page.wait_for_timeout(500)
+            screenshot_bytes = await page.screenshot(full_page=True, animations="disabled")
+            return screenshot_bytes
+        finally:
+            await page.close()
 
     @vf.stop
     async def model_signaled_done(self, state: State) -> bool:
-        """Stop when the model includes 'DONE' in its response."""
+        """Stop when the model includes 'DONE' in its response.
+
+        Disabled when allow_early_stop=False (e.g. during RL training with
+        MT-GRPO, which requires fixed-length rollouts for dense per-turn rewards).
+        """
+        if not self.allow_early_stop:
+            return False
         if not state["trajectory"]:
             return False
         last_completion = state["trajectory"][-1]["completion"]
@@ -158,6 +226,78 @@ class FrontendReplicationEnv(vf.MultiTurnEnv):
             return False
         last_content = last_completion[-1].get("content", "")
         return "DONE" in last_content
+
+    async def render_completion(self, state: State):
+        """After rollout ends, render + score the final turn's HTML and assign its step reward.
+
+        env_response is only called when building the *next* turn's prompt, so the
+        final turn (stopped by DONE or max_turns) is never rendered/scored. We do
+        that here to ensure every trajectory step has a turn-level reward for
+        MT-GRPO training.
+        """
+        await super().render_completion(state)
+
+        if not state["trajectory"]:
+            return
+        last_step = state["trajectory"][-1]
+        if last_step["reward"] is not None:
+            return  # Already scored
+
+        # Extract and render the final turn's HTML (env_response was never called)
+        last_content = last_step["completion"][-1].get("content", "") if last_step["completion"] else ""
+        if isinstance(last_content, list):
+            last_content = " ".join(
+                part.get("text", "") for part in last_content if part.get("type") == "text"
+            )
+        html = extract_html(last_content)
+        if html is None:
+            last_step["reward"] = 0.0
+            return
+
+        state["current_html"] = html
+        try:
+            screenshot_bytes = await self.render_html(
+                html, width=state["viewport_width"], height=state["viewport_height"],
+            )
+            state["current_screenshot_b64"] = image_to_base64(screenshot_bytes)
+        except Exception as e:
+            logger.warning(f"Final turn render failed: {e}")
+            last_step["reward"] = 0.0
+            return
+
+        ref_b64 = state.get("reference_screenshot_b64", "")
+        if not ref_b64:
+            last_step["reward"] = 0.0
+            return
+
+        ref_img = decode_screenshot(ref_b64)
+        gen_img = decode_screenshot(state["current_screenshot_b64"])
+        try:
+            result = await score_pages_async(
+                ref_img, gen_img,
+                ref_html=state.get("reference_html") or None,
+                gen_html=html,
+                use_clip=False,
+                render_fn=self.render_html,
+            )
+            last_step["reward"] = result.final_score
+            # Also store in turn_scores for consistency
+            turn_scores = state.get("turn_scores", [])
+            turn_scores.append({
+                "size_score": result.size_score,
+                "text_score": result.text_score,
+                "position_score": result.position_score,
+                "color_score": result.color_score,
+                "final_score": result.final_score,
+                "num_ref_blocks": result.num_ref_blocks,
+                "num_gen_blocks": result.num_gen_blocks,
+                "num_matched": result.num_matched,
+            })
+            state["turn_scores"] = turn_scores
+            logger.info(f"Final turn score: {result.final_score:.3f}")
+        except Exception as e:
+            logger.warning(f"Final turn scoring failed: {e}")
+            last_step["reward"] = 0.0
 
     async def setup_state(self, state: State) -> State:
         """Initialize per-rollout state."""
@@ -174,6 +314,8 @@ class FrontendReplicationEnv(vf.MultiTurnEnv):
         state["current_screenshot_b64"] = ""
         state["turn"] = 0
         state["render_times"] = []
+        state["turn_scores"] = []  # list of ScoringResult dicts per turn
+        state["reference_html"] = info.get("reference_html", "")
 
         return await super().setup_state(state)
 
@@ -234,9 +376,9 @@ class FrontendReplicationEnv(vf.MultiTurnEnv):
         state["current_html"] = html
         state["turn"] += 1
 
-        # Render the HTML — fail fast on errors
+        # Render the HTML using persistent browser
         s = time.time()
-        screenshot_bytes = await render_html_playwright(
+        screenshot_bytes = await self.render_html(
             html,
             width=state["viewport_width"],
             height=state["viewport_height"],
@@ -246,20 +388,67 @@ class FrontendReplicationEnv(vf.MultiTurnEnv):
         screenshot_b64 = image_to_base64(screenshot_bytes)
         state["current_screenshot_b64"] = screenshot_b64
 
-        # Build feedback message with both screenshots
+        # --- MT-GRPO: Score this turn internally (training signal only) ---
+        # Per MT-GRPO (arXiv:2505.11821): scores are used as RL training
+        # signals, NOT shown to the model. The model learns to self-assess
+        # from visual feedback (screenshots) alone.
+        ref_b64 = state["reference_screenshot_b64"]
+        score_result = None
+        if ref_b64:
+            ref_img = decode_screenshot(ref_b64)
+            gen_img = decode_screenshot(screenshot_b64)
+            ref_html = state.get("reference_html") or None
+            gen_html = html
+            try:
+                score_result = await score_pages_async(
+                    ref_img, gen_img,
+                    ref_html=ref_html, gen_html=gen_html,
+                    use_clip=False,
+                    render_fn=self.render_html,
+                )
+            except Exception as e:
+                logger.warning(f"Turn scoring failed: {e}")
+
+        # Store scores internally for RL training signals — never shown to model
+        turn_score = 0.0
+        if score_result is not None:
+            turn_score = score_result.final_score
+            turn_scores = state.get("turn_scores", [])
+            turn_scores.append({
+                "size_score": score_result.size_score,
+                "text_score": score_result.text_score,
+                "position_score": score_result.position_score,
+                "color_score": score_result.color_score,
+                "final_score": score_result.final_score,
+                "num_ref_blocks": score_result.num_ref_blocks,
+                "num_gen_blocks": score_result.num_gen_blocks,
+                "num_matched": score_result.num_matched,
+            })
+            state["turn_scores"] = turn_scores
+            logger.info(
+                f"Turn {state['turn']} score: {score_result.final_score:.3f} "
+                f"(size={score_result.size_score:.3f} text={score_result.text_score:.3f} "
+                f"pos={score_result.position_score:.3f} color={score_result.color_score:.3f})"
+            )
+
+        # MT-GRPO: assign turn-level reward to the trajectory step.
+        # env_response is called when building the *next* turn's prompt,
+        # so the current turn's step is the last one in the trajectory.
+        if state["trajectory"]:
+            state["trajectory"][-1]["reward"] = turn_score
+
+        # Build feedback: only visual (screenshots) + turn counter
+        feedback_text = (
+            f"Turn {state['turn']}/{self.max_turns}. "
+            f"Here is your current rendering (first image) and the target (second image). "
+            f"Refine your HTML to better match the target. When satisfied, end with DONE."
+        )
         content_parts: list[dict[str, Any]] = []
-
-        content_parts.append({
-            "type": "text",
-            "text": f"Turn {state['turn']}/{MAX_TURNS}. Here is your current rendering (left) and the target (right). Refine your HTML to better match the target. When satisfied, end with DONE.",
-        })
-
+        content_parts.append({"type": "text", "text": feedback_text})
         content_parts.append({
             "type": "image_url",
             "image_url": {"url": screenshot_b64},
         })
-
-        ref_b64 = state["reference_screenshot_b64"]
         if ref_b64:
             content_parts.append({
                 "type": "image_url",

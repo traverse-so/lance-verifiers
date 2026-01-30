@@ -11,6 +11,7 @@ dependencies = [
     "Pillow",
     "numpy",
     "scipy",
+    "beautifulsoup4",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +25,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["frontend_replication.py", "scoring.py", "pyproject.toml"]
+include = ["frontend_replication.py", "scoring.py", "ocr_free_utils.py", "pyproject.toml"]
 
 [tool.verifiers.eval]
 num_examples = 5

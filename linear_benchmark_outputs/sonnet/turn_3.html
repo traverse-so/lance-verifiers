@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI workflows for modern product teams - Linear</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #000000;
+            color: #E5E5E5;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            line-height: 1.6;
+        }
+
+        /* Navigation */
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 40px;
+            border-bottom: 1px solid #1A1A1A;
+        }
+
+        .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 32px;
+        }
+
+        .logo {
+            font-size: 15px;
+            font-weight: 600;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 24px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: #7A7A7A;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .nav-links a:hover {
+            color: white;
+        }
+
+        .nav-right {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .btn-login {
+            background: transparent;
+            color: #7A7A7A;
+            border: none;
+            padding: 7px 16px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .btn-signup {
+            background: white;
+            color: black;
+            border: none;
+            padding: 7px 18px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        /* Hero Section */
+        .hero {
+            text-align: center;
+            padding: 110px 40px 70px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .hero h1 {
+            font-size: 68px;
+            font-weight: 600;
+            line-height: 1.08;
+            margin-bottom: 24px;
+            color: white;
+            letter-spacing: -0.03em;
+        }
+
+        .hero p {
+            font-size: 19px;
+            color: #7A7A7A;
+            max-width: 600px;
+            margin: 0 auto;
+            line-height: 1.55;
+        }
+
+        /* Product Screenshot */
+        .product-screenshot {
+            max-width: 1200px;
+            margin: 70px auto;
+            padding: 0 40px;
+        }
+
+        .screenshot-placeholder {
+            width: 100%;
+            height: 580px;
+            background: linear-gradient(180deg, #151515 0%, #0A0A0A 100%);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #3A3A3A;
+            font-size: 15px;
+            border: 1px solid #1A1A1A;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .screenshot-placeholder::before {
+            content: '';
+            position: absolute;
+            top: 24px;
+            left: 24px;
+            right: 24px;
+            height: 50px;
+            background: #1A1A1A;
+            border-radius: 8px;
+        }
+
+        /* Section Container */
+        .section {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 90px 40px;
+        }
+
+        .section-label {
+            font-size: 12px;
+            color: #4A4A4A;
+            text-transform: uppercase;
+            letter-spacing: 1.8px;
+            margin-bottom: 16px;
+            font-weight: 500;
+        }
+
+        /* Two Column Layout */
+        .two-column {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 100px;
+            align-items: center;
+        }
+
+        .column h2 {
+            font-size: 44px;
+            font-weight: 600;
+            line-height: 1.12;
+            margin-bottom: 22px;
+            color: white;
+            letter-spacing: -0.025em;
+        }
+
+        .column p {
+            font-size: 17px;
+            color: #7A7A7A;
+            line-height: 1.65;
+        }
+
+        .ui-card-placeholder {
+            width: 100%;
+            height: 400px;
+            background: #0A0A0A;
+            border-radius: 10px;
+            border: 1px solid #1A1A1A;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #3A3A3A;
+            font-size: 14px;
+            padding: 24px;
+        }
+
+        /* Feature Blocks */
+        .feature-blocks {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 60px;
+            margin-top: 90px;
+        }
+
+        .feature-block h3 {
+            font-size: 27px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: white;
+            letter-spacing: -0.015em;
+            line-height: 1.25;
+        }
+
+        .feature-block p {
+            font-size: 16px;
+            color: #7A7A7A;
+            margin-bottom: 24px;
+            line-height: 1.6;
+        }
+
+        .feature-card {
+            width: 100%;
+            height: 280px;
+            background: #0A0A0A;
+            border-radius: 10px;
+            border: 1px solid #1A1A1A;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #3A3A3A;
+            font-size: 13px;
+            margin-top: 20px;
+        }
+
+        /* Logo Section */
+        .logos-section {
+            text-align: center;
+            padding: 70px 40px;
+            border-top: 1px solid #151515;
+            border-bottom: 1px solid #151515;
+        }
+
+        .logos-section p {
+            font-size: 13px;
+            color: #4A4A4A;
+            margin-bottom: 40px;
+        }
+
+        .logos-grid {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 56px;
+            flex-wrap: wrap;
+        }
+
+        .logo-placeholder {
+            padding: 10px 24px;
+            color: #5A5A5A;
+            font-size: 16px;
+            font-weight: 500;
+        }
+
+        /* Agents Section */
+        .agents-section {
+            background: #000000;
+            padding: 90px 40px;
+        }
+
+        .agents-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 100px;
+            align-items: start;
+        }
+
+        .learn-more {
+            display: inline-flex;
+            align-items: center;
+            color: white;
+            text-decoration: none;
+            margin-top: 16px;
+            font-size: 15px;
+            gap: 6px;
+        }
+
+        .learn-more::after {
+            content: "→";
+        }
+
+        .assign-card {
+            width: 100%;
+            height: 320px;
+            background: #0A0A0A;
+            border-radius: 10px;
+            border: 1px solid #1A1A1A;
+            padding: 24px;
+        }
+
+        .assign-card-label {
+            font-size: 14px;
+            color: #7A7A7A;
+            margin-bottom: 20px;
+        }
+
+        .assign-item {
+            padding: 12px 0;
+            color: #7A7A7A;
+            font-size: 15px;
+            border-bottom: 1px solid #151515;
+        }
+
+        /* Agent Icons */
+        .agent-icons {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            margin: 60px 0;
+            max-width: 1200px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .agent-icon {
+            width: 60px;
+            height: 60px;
+            background: #151515;
+            border-radius: 50%;
+            border: 1px solid #252525;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #4A4A4A;
+            font-size: 16px;
+        }
+
+        .add-icon {
+            background: white;
+            color: black;
+            font-size: 24px;
+            font-weight: 300;
+        }
+
+        /* Use Cases */
+        .use-cases {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 40px;
+        }
+
+        /* Features Grid */
+        .features-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 60px;
+            margin-top: 60px;
+        }
+
+        .feature-item h4 {
+            font-size: 23px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: white;
+            letter-spacing: -0.015em;
+        }
+
+        .feature-item p {
+            font-size: 16px;
+            color: #7A7A7A;
+            margin-bottom: 20px;
+            line-height: 1.6;
+        }
+
+        .feature-visual {
+            width: 100%;
+            height: 220px;
+            background: #0A0A0A;
+            border-radius: 10px;
+            border: 1px solid #1A1A1A;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #3A3A3A;
+            font-size: 13px;
+            margin-bottom: 24px;
+        }
+
+        /* Audio Player */
+        .audio-player {
+            width: 100%;
+            height: 180px;
+            background: #0A0A0A;
+            border-radius: 10px;
+            border: 1px solid #1A1A1A;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .audio-controls {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .audio-btn {
+            width: 38px;
+            height: 38px;
+            background: #151515;
+            border-radius: 50%;
+            border: 1px solid #252525;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 14px;
+        }
+
+        .audio-btn.play {
+            width: 46px;
+            height: 46px;
+            font-size: 16px;
+        }
+
+        .audio-label {
+            font-size: 13px;
+            color: #5A5A5A;
+        }
+
+        /* Shield Icon */
+        .shield-icon {
+            width: 100%;
+            height: 180px;
+            background: #0A0A0A;
+            border-radius: 10px;
+            border: 1px solid #1A1A1A;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 24px;
+        }
+
+        .shield {
+            width: 75px;
+            height: 75px;
+            background: white;
+            clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+        }
+
+        /* CTA Section */
+        .cta-section {
+            text-align: center;
+            padding: 110px 40px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .cta-section h2 {
+            font-size: 54px;
+            font-weight: 600;
+            line-height: 1.13;
+            margin-bottom: 40px;
+            color: white;
+            letter-spacing: -0.025em;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 14px;
+            justify-content: center;
+        }
+
+        .btn-contact {
+            background: transparent;
+            color: white;
+            border: 1px solid #252525;
+            padding: 13px 26px;
+            border-radius: 7px;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        .btn-get-started {
+            background: white;
+            color: black;
+            border: none;
+            padding: 13px 26px;
+            border-radius: 7px;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid #151515;
+            padding: 70px 40px 50px;
+        }
+
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1.5fr 1fr 1fr 1fr 1fr 1fr;
+            gap: 60px;
+        }
+
+        .footer-logo {
+            font-size: 15px;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .footer-column h5 {
+            font-size: 13px;
+            font-weight: 600;
+            color: white;
+            margin-bottom: 16px;
+        }
+
+        .footer-column ul {
+            list-style: none;
+        }
+
+        .footer-column ul li {
+            margin-bottom: 11px;
+        }
+
+        .footer-column ul li a {
+            color: #4A4A4A;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .footer-column ul li a:hover {
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav>
+        <div class="nav-left">
+            <div class="logo">▶ Linear</div>
+            <ul class="nav-links">
+                <li><a href="#">Products</a></li>
+                <li><a href="#">Resources</a></li>
+                <li><a href="#">Pricing</a></li>
+                <li><a href="#">Customers</a></li>
+                <li><a href="#">Max</a></li>
+                <li><a href="#">Contact</a></li>
+            </ul>
+        </div>
+        <div class="nav-right">
+            <button class="btn-login">Log in</button>
+            <button class="btn-signup">Sign up</button>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <h1>AI workflows for<br>modern product teams</h1>
+        <p>Streamline your product development with Linear's powerful AI workflows. Purpose-built to help product teams move faster.</p>
+    </section>
+
+    <!-- Product Screenshot -->
+    <div class="product-screenshot">
+        <div class="screenshot-placeholder">Product Screenshot</div>
+    </div>
+
+    <!-- Triage Intelligence Section -->
+    <section class="section">
+        <div class="two-column">
+            <div class="column">
+                <div class="section-label">Triage Intelligence</div>
+                <h2>Self-driving product operations</h2>
+                <p>Automate the overhead. AI-powered features like Triage Intelligence can suggest and can triage issues based on your team's historical patterns.</p>
+            </div>
+            <div class="column">
+                <div class="ui-card-placeholder">Triage Intelligence Card</div>
+            </div>
+        </div>
+
+        <!-- Feature Blocks -->
+        <div class="feature-blocks">
+            <div class="feature-block">
+                <h3>Find duplicates before they slow you down</h3>
+                <p>Linear intelligently surfaces similar and duplicate issues so your team can focus on what matters most instead of the same bugs.</p>
+                <div class="feature-card">Duplicate Issues Card</div>
+            </div>
+            <div class="feature-block">
+                <h3>Unlock the value of your backlog</h3>
+                <p>Gain actionable insights across your backlog. Linear's AI helps you understand patterns, prioritize effectively, and make smarter decisions built on what actually matters to your team.</p>
+                <div class="feature-card">Backlog Insights Card</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Logos Section -->
+    <section class="logos-section">
+        <p>Leading AI companies plan and build with Linear</p>
+        <div class="logos-grid">
+            <div class="logo-placeholder">Scale</div>
+            <div class="logo-placeholder">Replit</div>
+            <div class="logo-placeholder">Runway</div>
+            <div class="logo-placeholder">ElevenLabs</div>
+            <div class="logo-placeholder">Cohere</div>
+        </div>
+    </section>
+
+    <!-- Agents Section -->
+    <section class="agents-section">
+        <div class="agents-content">
+            <div class="column">
+                <div class="section-label">Linear for Agents</div>
+                <h2>Delegate and automate work with AI agents</h2>
+                <p>Build, integrate, and deploy AI agents that work seamlessly with Linear. From issue triage to automation, easily build on available tools to make AI work for you.</p>
+                <a href="#" class="learn-more">Learn more</a>
+            </div>
+            <div class="column">
+                <div class="assign-card">
+                    <div class="assign-card-label">Assign to...</div>
+                    <div class="assign-item">✓ Extractor - Label</div>
+                    <div class="assign-item">✓ OpenAI Guides - Agent</div>
+                    <div class="assign-item">⚡ Discord</div>
+                    <div class="assign-item">⚡ GitHub Copilot</div>
+                    <div class="assign-item">⚡ Weights</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agent Icons -->
+        <div class="agent-icons">
+            <div class="agent-icon">◆</div>
+            <div class="agent-icon">◆</div>
+            <div class="agent-icon">◆</div>
+            <div class="agent-icon">◆</div>
+            <div class="agent-icon">◆</div>
+            <div class="agent-icon add-icon">+</div>
+        </div>
+
+        <!-- Use Cases -->
+        <div class="use-cases">
+            <div class="feature-blocks">
+                <div class="feature-block">
+                    <h3>Agents for every use case, ready to deploy</h3>
+                    <p>Jump-start your AI integration with pre-built agents designed for common product team workflows. Deploy in minutes, customize as needed.</p>
+                    <div class="feature-card">Pre-built Agents Card</div>
+                </div>
+                <div class="feature-block">
+                    <h3>Create your own agents</h3>
+                    <p>Build your own custom agents with Linear's API. From simple automations to complex AI workflows, create agents that work exactly how you need them to.</p>
+                    <div class="feature-card">Custom Agents Card</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- AI Features Section -->
+    <section class="section">
+        <div class="section-label">Other features</div>
+        <h2>AI that works where you work</h2>
+        <p style="color: #7A7A7A; font-size: 17px; margin-top: 16px;">From building in Triage Mode to quickly searching for context, AI is woven into every workflow. AI that's built for product teams, not just bolted on.</p>
+
+        <div class="features-grid" style="margin-top: 70px;">
+            <div class="feature-item">
+                <div class="feature-visual">Linear MCP Integration</div>
+                <h4>Linear MCP</h4>
+                <p>Connect Linear to tools you already use with the Model Context Protocol. Build seamless workflows that bring AI capabilities wherever you need them.</p>
+            </div>
+            <div class="feature-item">
+                <div class="feature-visual">AI-powered Search</div>
+                <h4>AI-powered search</h4>
+                <p>Find exactly what you need with natural language search. Linear's AI understands context and relationships, helping you discover relevant issues, projects, and docs instantly.</p>
+            </div>
+        </div>
+
+        <div class="features-grid" style="margin-top: 70px;">
+            <div class="feature-item">
+                <div class="audio-player">
+                    <div class="audio-label">Daily Pulse for team AI</div>
+                    <div class="audio-controls">
+                        <div class="audio-btn">⏮</div>
+                        <div class="audio-btn play">⏸</div>
+                        <div class="audio-btn">⏭</div>
+                    </div>
+                </div>
+                <h4>Stay in sync with Pulse updates</h4>
+                <p>Get AI-generated daily summaries of what matters most. Pulse keeps your team aligned with personalized updates about relevant work, changes, and priorities.</p>
+            </div>
+            <div class="feature-item">
+                <div class="shield-icon">
+                    <div class="shield"></div>
+                </div>
+                <h4>Enterprise-grade security</h4>
+                <p>Everything built to support AI features and integrations is built with enterprise security in mind. Your data stays secure, private, and under your control with SOC 2 compliance and end-to-end encryption.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta-section">
+        <h2>Plan and build with a little help from AI</h2>
+        <div class="cta-buttons">
+            <button class="btn-contact">Contact sales</button>
+            <button class="btn-get-started">Get started</button>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-content">
+            <div class="footer-column">
+                <div class="footer-logo">▶ Linear</div>
+            </div>
+            <div class="footer-column">
+                <h5>Features</h5>
+                <ul>
+                    <li><a href="#">Issues</a></li>
+                    <li><a href="#">Projects</a></li>
+                    <li><a href="#">Roadmaps</a></li>
+                    <li><a href="#">Triage</a></li>
+                    <li><a href="#">Docs</a></li>
+                </ul>
+            </div>
+            <div class="footer-column">
+                <h5>Product</h5>
+                <ul>
+                    <li><a href="#">Pricing</a></li>
+                    <li><a href="#">Changelog</a></li>
+                    <li><a href="#">Integrations</a></li>
+                    <li><a href="#">API</a></li>
+                    <li><a href="#">Status</a></li>
+                </ul>
+            </div>
+            <div class="footer-column">
+                <h5>Company</h5>
+                <ul>
+                    <li><a href="#">About</a></li>
+                    <li><a href="#">Customers</a></li>
+                    <li><a href="#">Careers</a></li>
+                    <li><a href="#">Blog</a></li>
+                    <li><a href="#">Press</a></li>
+                </ul>
+            </div>
+            <div class="footer-column">
+                <h5>Resources</h5>
+                <ul>
+                    <li><a href="#">Documentation</a></li>
+                    <li><a href="#">Help Center</a></li>
+                    <li><a href="#">Community</a></li>
+                    <li><a href="#">Guides</a></li>
+                    <li><a href="#">Templates</a></li>
+                </ul>
+            </div>
+            <div class="footer-column">
+                <h5>Contact</h5>
+                <ul>
+                    <li><a href="#">Contact sales</a></li>
+                    <li><a href="#">Support</a></li>
+                    <li><a href="#">Twitter</a></li>
+                    <li><a href="#">LinkedIn</a></li>
+                </ul>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

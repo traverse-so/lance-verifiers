@@ -67,6 +67,107 @@ class ScoringResult:
     num_matched: int = 0
 
 
+async def detect_blocks_from_html(
+    html: str,
+    width: int = 1280,
+    height: int = 800,
+    render_fn=None,
+) -> list[VisualBlock]:
+    """
+    Detect text blocks from HTML using Design2Code's color-injection method.
+
+    This is the preferred method — it yields exact text content and accurate
+    bounding boxes by injecting unique colors into DOM elements and diffing
+    two offset renders.
+
+    Returns blocks with normalized [0,1] coordinates.
+    """
+    from ocr_free_utils import TextBlock, get_blocks_ocr_free
+
+    raw_blocks: list[TextBlock] = await get_blocks_ocr_free(
+        html, width=width, height=height, render_fn=render_fn,
+    )
+
+    visual_blocks = [
+        VisualBlock(
+            x=tb.bbox[0],
+            y=tb.bbox[1],
+            width=tb.bbox[2],
+            height=tb.bbox[3],
+            text=tb.text,
+            color=tb.color_rgb,
+        )
+        for tb in raw_blocks
+    ]
+    return visual_blocks
+
+
+def find_possible_merge(
+    blocks: list[VisualBlock],
+    cost_threshold: float = 0.05,
+) -> list[VisualBlock]:
+    """
+    Iteratively merge consecutive blocks if merging improves matching cost.
+
+    Design2Code merges adjacent text blocks that likely belong to the same
+    visual element (e.g., a heading split across <span> tags). Two consecutive
+    blocks are merged if they are horizontally adjacent (same y-band) and
+    the merged block's area is close to the sum of the individual areas.
+    """
+    if len(blocks) <= 1:
+        return blocks
+
+    merged = list(blocks)
+    changed = True
+    while changed:
+        changed = False
+        new_merged = []
+        i = 0
+        while i < len(merged):
+            if i + 1 < len(merged):
+                b1 = merged[i]
+                b2 = merged[i + 1]
+
+                # Check if blocks are vertically overlapping (same row)
+                y1_min, y1_max = b1.y, b1.y + b1.height
+                y2_min, y2_max = b2.y, b2.y + b2.height
+                overlap = min(y1_max, y2_max) - max(y1_min, y2_min)
+                min_h = min(b1.height, b2.height)
+
+                if min_h > 0 and overlap / min_h > 0.5:
+                    # Horizontally close?
+                    gap = abs((b2.x) - (b1.x + b1.width))
+                    if gap < 0.05:  # 5% of page width
+                        # Merge
+                        x_min = min(b1.x, b2.x)
+                        y_min = min(b1.y, b2.y)
+                        x_max = max(b1.x + b1.width, b2.x + b2.width)
+                        y_max = max(b1.y + b1.height, b2.y + b2.height)
+                        merged_text = (b1.text + " " + b2.text).strip()
+                        # Average color
+                        avg_color = tuple(
+                            (c1 + c2) // 2 for c1, c2 in zip(b1.color, b2.color)
+                        )
+                        new_merged.append(
+                            VisualBlock(
+                                x=x_min,
+                                y=y_min,
+                                width=x_max - x_min,
+                                height=y_max - y_min,
+                                text=merged_text,
+                                color=avg_color,
+                            )
+                        )
+                        i += 2
+                        changed = True
+                        continue
+            new_merged.append(merged[i])
+            i += 1
+        merged = new_merged
+
+    return merged
+
+
 def detect_blocks_from_screenshot(image: np.ndarray) -> list[VisualBlock]:
     """
     Detect visual blocks from a rendered webpage screenshot using contour detection.
@@ -100,9 +201,10 @@ def detect_blocks_from_screenshot(image: np.ndarray) -> list[VisualBlock]:
         if w < 10 or h < 5:
             continue
 
-        # Sample dominant color from the block region
+        # Sample dominant color from the block region (convert BGR -> RGB)
         region = image[y : y + h, x : x + w]
-        avg_color = tuple(int(c) for c in cv2.mean(region)[:3])
+        avg_bgr = cv2.mean(region)[:3]
+        avg_rgb = (int(avg_bgr[2]), int(avg_bgr[1]), int(avg_bgr[0]))
 
         blocks.append(
             VisualBlock(
@@ -111,7 +213,7 @@ def detect_blocks_from_screenshot(image: np.ndarray) -> list[VisualBlock]:
                 width=float(w),
                 height=float(h),
                 text="",  # text extraction done separately if needed
-                color=avg_color,  # BGR from OpenCV
+                color=avg_rgb,
             )
         )
 
@@ -189,32 +291,19 @@ def compute_block_matching(
 
     for i, ref in enumerate(ref_blocks):
         for j, gen in enumerate(gen_blocks):
-            # Spatial distance (normalized Chebyshev)
-            cx_ref, cy_ref = ref.center
-            cx_gen, cy_gen = gen.center
-            dx = abs(cx_ref - cx_gen) / img_width
-            dy = abs(cy_ref - cy_gen) / img_height
-            spatial_dist = max(dx, dy)
-
-            # Size similarity
-            size_ratio = min(ref.area, gen.area) / max(ref.area, gen.area) if max(ref.area, gen.area) > 0 else 0
-            size_dist = 1.0 - size_ratio
-
-            # Text similarity (if available)
+            # Design2Code: matching cost based on text similarity
             text_sim = 0.0
             if ref.text and gen.text:
                 text_sim = difflib.SequenceMatcher(None, ref.text, gen.text).ratio()
-
-            # Combined cost: spatial + size, bonus for text match
-            cost = 0.5 * spatial_dist + 0.3 * size_dist + 0.2 * (1.0 - text_sim)
-            cost_matrix[i, j] = cost
+            cost_matrix[i, j] = -text_sim  # negative because we minimize
 
     # Hungarian algorithm for optimal assignment
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
     matches = []
     for r, c in zip(row_ind, col_ind):
-        if cost_matrix[r, c] < 2.0:  # filter out very poor matches
+        # cost is negative text_sim, so cost < -0.0 means some text match
+        if cost_matrix[r, c] < -0.01:
             matches.append((r, c, cost_matrix[r, c]))
 
     return matches
@@ -226,26 +315,21 @@ def compute_size_score(
     matches: list[tuple[int, int, float]],
 ) -> float:
     """
-    Size score: ratio of matched block area to total block area.
-    Design2Code: final_size_score = sum(matched_areas) / sum(all_areas)
+    Size score: sum of matched block areas / sum of all block areas.
+
+    Design2Code formula: matched_area_sum / total_area_sum across both ref and gen.
     """
     if not ref_blocks and not gen_blocks:
         return 1.0
-    if not matches:
+    if not ref_blocks or not gen_blocks:
         return 0.0
 
     matched_area = 0.0
     for r, c, _ in matches:
-        matched_area += min(ref_blocks[r].area, gen_blocks[c].area)
+        matched_area += ref_blocks[r].area + gen_blocks[c].area
 
-    total_ref_area = sum(b.area for b in ref_blocks)
-    total_gen_area = sum(b.area for b in gen_blocks)
-    total_area = total_ref_area + total_gen_area
-
-    if total_area == 0:
-        return 1.0
-
-    return min(1.0, (2.0 * matched_area) / total_area)
+    total_area = sum(b.area for b in ref_blocks) + sum(b.area for b in gen_blocks)
+    return matched_area / total_area if total_area > 0 else 0.0
 
 
 def compute_text_score(
@@ -255,6 +339,8 @@ def compute_text_score(
 ) -> float:
     """
     Text score: average SequenceMatcher ratio across matched block pairs.
+
+    Design2Code uses SequenceMatcher for text similarity.
     """
     if not matches:
         return 0.0
@@ -429,6 +515,24 @@ def compute_color_score(
     return sum(scores) / len(scores)
 
 
+_clip_model = None
+_clip_processor = None
+
+
+def _get_clip_model():
+    """Lazy-load and cache CLIP model as module-level singleton."""
+    global _clip_model, _clip_processor
+    if _clip_model is None:
+        import torch
+        from transformers import CLIPModel, CLIPProcessor
+
+        model_name = "openai/clip-vit-base-patch32"
+        _clip_processor = CLIPProcessor.from_pretrained(model_name)
+        _clip_model = CLIPModel.from_pretrained(model_name)
+        _clip_model.eval()
+    return _clip_model, _clip_processor
+
+
 def compute_clip_score(
     ref_image: np.ndarray,
     gen_image: np.ndarray,
@@ -441,7 +545,6 @@ def compute_clip_score(
     """
     try:
         import torch
-        from transformers import CLIPModel, CLIPProcessor
     except ImportError:
         logger.warning("transformers/torch not available, returning CLIP score 0.0")
         return 0.0
@@ -454,11 +557,7 @@ def compute_clip_score(
     ref_pil = Image.fromarray(cv2.cvtColor(ref_inpainted, cv2.COLOR_BGR2RGB))
     gen_pil = Image.fromarray(cv2.cvtColor(gen_inpainted, cv2.COLOR_BGR2RGB))
 
-    # Load CLIP model
-    model_name = "openai/clip-vit-base-patch32"
-    processor = CLIPProcessor.from_pretrained(model_name)
-    model = CLIPModel.from_pretrained(model_name)
-    model.eval()
+    model, processor = _get_clip_model()
 
     with torch.no_grad():
         ref_inputs = processor(images=ref_pil, return_tensors="pt")
@@ -474,8 +573,29 @@ def compute_clip_score(
         # Cosine similarity
         similarity = (ref_features @ gen_features.T).item()
 
-    # CLIP cosine similarity is in [-1, 1], map to [0, 1]
-    return max(0.0, min(1.0, (similarity + 1.0) / 2.0))
+    # CLIP image-image cosine similarity is typically in [0.5, 1.0].
+    # Clamp to [0, 1] rather than rescaling from [-1, 1] which would
+    # compress the useful range and lose discriminative power.
+    return max(0.0, min(1.0, similarity))
+
+
+def _normalize_blocks(
+    blocks: list[VisualBlock],
+    img_width: float,
+    img_height: float,
+) -> list[VisualBlock]:
+    """Normalize block coordinates to [0, 1] range relative to image dimensions."""
+    return [
+        VisualBlock(
+            x=b.x / img_width,
+            y=b.y / img_height,
+            width=b.width / img_width,
+            height=b.height / img_height,
+            text=b.text,
+            color=b.color,
+        )
+        for b in blocks
+    ]
 
 
 def score_pages(
@@ -488,6 +608,9 @@ def score_pages(
     """
     Score a generated page against a reference page using Design2Code metrics.
 
+    For HTML-based scoring (Design2Code color-injection), use score_pages_async
+    which supports ref_html/gen_html parameters.
+
     Args:
         ref_image: Reference webpage screenshot (BGR, OpenCV format)
         gen_image: Generated webpage screenshot (BGR, OpenCV format)
@@ -498,37 +621,61 @@ def score_pages(
     Returns:
         ScoringResult with all five component scores and final weighted average.
     """
-    h_img, w_img = ref_image.shape[:2]
+    h_ref, w_ref = ref_image.shape[:2]
+    h_gen, w_gen = gen_image.shape[:2]
 
-    # Resize generated image to match reference dimensions
-    if gen_image.shape[:2] != ref_image.shape[:2]:
-        gen_image = cv2.resize(gen_image, (w_img, h_img))
-
-    # Detect blocks if not provided
+    # Detect blocks on each image at its native resolution (no distortion)
     if ref_blocks is None:
         ref_blocks = detect_blocks_from_screenshot(ref_image)
     if gen_blocks is None:
         gen_blocks = detect_blocks_from_screenshot(gen_image)
 
-    # Match blocks
-    matches = compute_block_matching(
-        ref_blocks, gen_blocks, float(w_img), float(h_img)
+    # Normalize block coordinates to [0, 1] so images of different sizes
+    # can be compared without aspect-ratio-destroying resizes
+    ref_norm = _normalize_blocks(ref_blocks, float(w_ref), float(h_ref))
+    gen_norm = _normalize_blocks(gen_blocks, float(w_gen), float(h_gen))
+
+    return _score_from_blocks(
+        ref_image, gen_image, ref_blocks, gen_blocks,
+        ref_norm, gen_norm, use_clip,
     )
 
-    # Compute component scores
-    size = compute_size_score(ref_blocks, gen_blocks, matches)
-    text = compute_text_score(ref_blocks, gen_blocks, matches)
-    position = compute_position_score(
-        ref_blocks, gen_blocks, matches, float(w_img), float(h_img)
-    )
-    color = compute_color_score(ref_blocks, gen_blocks, matches)
+
+def _score_from_blocks(
+    ref_image: np.ndarray,
+    gen_image: np.ndarray,
+    ref_blocks: list[VisualBlock],
+    gen_blocks: list[VisualBlock],
+    ref_norm: list[VisualBlock],
+    gen_norm: list[VisualBlock],
+    use_clip: bool,
+) -> ScoringResult:
+    """Core scoring logic shared by sync and async paths."""
+    h_ref, w_ref = ref_image.shape[:2]
+
+    # Merge blocks that belong together
+    ref_norm = find_possible_merge(ref_norm)
+    gen_norm = find_possible_merge(gen_norm)
+
+    # Match in normalized [0,1] x [0,1] space
+    matches = compute_block_matching(ref_norm, gen_norm, 1.0, 1.0)
+
+    # Compute component scores using normalized blocks
+    size = compute_size_score(ref_norm, gen_norm, matches)
+    text = compute_text_score(ref_norm, gen_norm, matches)
+    position = compute_position_score(ref_norm, gen_norm, matches, 1.0, 1.0)
+    color = compute_color_score(ref_norm, gen_norm, matches)
 
     clip = 0.0
     if use_clip:
-        clip = compute_clip_score(ref_image, gen_image, ref_blocks, gen_blocks)
+        if gen_image.shape[:2] != ref_image.shape[:2]:
+            gen_resized = cv2.resize(gen_image, (w_ref, h_ref))
+        else:
+            gen_resized = gen_image
+        clip = compute_clip_score(ref_image, gen_resized, ref_blocks, gen_blocks)
 
-    # Equal weighting (20% each) following Design2Code
-    final = (size + text + position + color + clip) / 5.0
+    # Design2Code: equal 0.2 weight for all 5 metrics
+    final = 0.2 * (size + text + position + color + clip)
 
     return ScoringResult(
         size_score=size,
@@ -537,8 +684,8 @@ def score_pages(
         color_score=color,
         clip_score=clip,
         final_score=final,
-        num_ref_blocks=len(ref_blocks),
-        num_gen_blocks=len(gen_blocks),
+        num_ref_blocks=len(ref_norm),
+        num_gen_blocks=len(gen_norm),
         num_matched=len(matches),
     )
 
@@ -546,12 +693,57 @@ def score_pages(
 async def score_pages_async(
     ref_image: np.ndarray,
     gen_image: np.ndarray,
+    ref_html: Optional[str] = None,
+    gen_html: Optional[str] = None,
     ref_blocks: Optional[list[VisualBlock]] = None,
     gen_blocks: Optional[list[VisualBlock]] = None,
     use_clip: bool = True,
+    render_fn=None,
 ) -> ScoringResult:
-    """Async wrapper for score_pages (runs in executor to avoid blocking)."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, score_pages, ref_image, gen_image, ref_blocks, gen_blocks, use_clip
+    """
+    Async scoring with optional HTML-based Design2Code block detection.
+
+    If ref_html/gen_html are provided, uses color-injection for accurate
+    text + bounding box extraction. Otherwise falls back to contour detection.
+    """
+    h_ref, w_ref = ref_image.shape[:2]
+    h_gen, w_gen = gen_image.shape[:2]
+
+    # Prefer HTML-based detection (Design2Code color-injection),
+    # falling back to contour-based detection on Playwright errors.
+    if ref_blocks is not None:
+        # Pre-computed blocks (already normalized [0,1] from detect_blocks_from_html)
+        ref_norm = ref_blocks
+    elif ref_html is not None:
+        try:
+            ref_blocks = await detect_blocks_from_html(
+                ref_html, width=w_ref, height=h_ref, render_fn=render_fn,
+            )
+            ref_norm = ref_blocks  # already normalized [0,1]
+        except Exception as e:
+            logger.warning(f"HTML-based ref block detection failed, falling back to contours: {e}")
+            ref_blocks = detect_blocks_from_screenshot(ref_image)
+            ref_norm = _normalize_blocks(ref_blocks, float(w_ref), float(h_ref))
+    else:
+        ref_blocks = detect_blocks_from_screenshot(ref_image)
+        ref_norm = _normalize_blocks(ref_blocks, float(w_ref), float(h_ref))
+
+    if gen_html is not None and gen_blocks is None:
+        try:
+            gen_blocks = await detect_blocks_from_html(
+                gen_html, width=w_gen, height=h_gen, render_fn=render_fn,
+            )
+            gen_norm = gen_blocks  # already normalized [0,1]
+        except Exception as e:
+            logger.warning(f"HTML-based gen block detection failed, falling back to contours: {e}")
+            gen_blocks = detect_blocks_from_screenshot(gen_image)
+            gen_norm = _normalize_blocks(gen_blocks, float(w_gen), float(h_gen))
+    else:
+        if gen_blocks is None:
+            gen_blocks = detect_blocks_from_screenshot(gen_image)
+        gen_norm = _normalize_blocks(gen_blocks, float(w_gen), float(h_gen))
+
+    return _score_from_blocks(
+        ref_image, gen_image, ref_blocks, gen_blocks,
+        ref_norm, gen_norm, use_clip,
     )
