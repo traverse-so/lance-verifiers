@@ -1,0 +1,31 @@
+[project]
+name = "frontend-replication"
+description = "Frontend website replication benchmark: multi-turn long-horizon evaluation using Design2Code scoring"
+tags = ["frontend", "multi-turn", "long-horizon", "benchmark", "eval", "design2code"]
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.8",
+    "playwright",
+    "opencv-python-headless",
+    "Pillow",
+    "numpy",
+    "scipy",
+]
+
+[project.optional-dependencies]
+clip = [
+    "transformers",
+    "torch",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["frontend_replication.py", "scoring.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1
