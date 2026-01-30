@@ -33,6 +33,7 @@ from frontend_replication import (
     SYSTEM_PROMPT,
     decode_screenshot,
     extract_html,
+    extract_image_urls,
     image_to_base64,
     render_html_playwright,
 )
@@ -55,8 +56,8 @@ def load_endpoints() -> dict:
     return mod.ENDPOINTS
 
 
-def load_reference_screenshot(path: str, max_width: int = 1280) -> str:
-    """Load a screenshot file, resize to max_width, return as base64 data URI."""
+def load_reference_screenshot(path: str, max_width: int = 1280, max_height: int = 7500) -> str:
+    """Load a screenshot file, resize to fit within max dimensions, return as base64 data URI."""
     from PIL import Image
     from io import BytesIO
 
@@ -67,12 +68,13 @@ def load_reference_screenshot(path: str, max_width: int = 1280) -> str:
         bg.paste(img, mask=img.split()[3])
         img = bg
 
-    # Resize to max_width maintaining aspect ratio
-    if img.width > max_width:
-        ratio = max_width / img.width
-        new_height = int(img.height * ratio)
-        img = img.resize((max_width, new_height), Image.LANCZOS)
-        logger.info(f"Resized screenshot to {max_width}x{new_height}")
+    # Resize to fit within max_width x max_height maintaining aspect ratio
+    ratio = min(max_width / img.width, max_height / img.height, 1.0)
+    if ratio < 1.0:
+        new_w = int(img.width * ratio)
+        new_h = int(img.height * ratio)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        logger.info(f"Resized screenshot to {new_w}x{new_h}")
 
     buf = BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -81,48 +83,16 @@ def load_reference_screenshot(path: str, max_width: int = 1280) -> str:
 
 TASK_DESCRIPTION = ""  # Set from args or default
 
-DEFAULT_DESCRIPTIONS = {
-    "linear": (
-        "Linear AI page (linear.app/ai): Dark theme (#0A0A0B background, white/light gray text). "
-        "Top nav bar: Linear logo [IMAGE: placeholder] (left), Products, Resources, Pricing, Customers, Max, Contact links, "
-        "then Log in and Sign up buttons (right). "
-        "Hero section: Large bold white headline 'AI workflows for modern product teams', "
-        "gray subtext about streamlining product development, purpose-built to help teams move faster. "
-        "Below hero: [IMAGE: large dark product screenshot/UI mockup ~1100x600px — use a dark gray placeholder labeled 'Product Screenshot']. "
-        "Next section: Two-column layout. Left column: 'Triage Intelligence' label, "
-        "large heading 'Self-driving product operations', body text about automating overhead "
-        "with AI-powered Triage Intelligence. Right column: [IMAGE: dark UI card ~500x400px — use a dark gray placeholder labeled 'Triage Intelligence Card']. "
-        "Next row: Two-column feature blocks — 'Find duplicates before they slow you down' (left) "
-        "with [IMAGE: dark UI card showing duplicate issues — placeholder], "
-        "and 'Unlock the value of your backlog' (right) with [IMAGE: dark UI card — placeholder]. "
-        "Logos section: 'Leading AI companies plan and build with Linear' with [IMAGE: company logos for Scale, Replit, Runway, ElevenLabs, Cohere — use text placeholders]. "
-        "Next section: 'Linear for Agents' label, heading 'Delegate and automate work with AI agents', "
-        "body text about building and deploying AI agents, 'Learn more' link. "
-        "Right side: [IMAGE: UI card showing 'Assign to...' dropdown — dark gray placeholder]. "
-        "Below: [IMAGE: row of 5 circular dark agent avatar icons with a '+' button — use simple circles as placeholders]. "
-        "Two columns: 'Agents for every use case, ready to deploy' and 'Create your own agents' — "
-        "each with [IMAGE: dark UI card — placeholder]. "
-        "Next section: 'Other features' label, heading 'AI that works where you work', "
-        "body text about AI in every workflow. Below: two dark cards — "
-        "[IMAGE: Linear MCP integration mockup — placeholder] and [IMAGE: AI-powered search mockup — placeholder]. "
-        "Feature labels: 'Linear MCP' and 'AI-powered search' with descriptions. "
-        "Next row: 'Stay in sync with Pulse updates' (left, [IMAGE: Daily Pulse audio player UI — placeholder]) "
-        "and 'Enterprise-grade security' (right, [IMAGE: shield icon — placeholder]). "
-        "Bottom CTA section: 'Plan and build with a little help from AI' with 'Contact sales' and 'Get started' buttons. "
-        "Footer: Linear logo [IMAGE: placeholder], columns for Features, Product, Company, Resources, Contact with link lists. "
-        "Overall: very dark, minimal, polished SaaS aesthetic with subtle dark gray cards on near-black background."
-    ),
-    "brex": (
-        "Brex homepage: Modern fintech SaaS landing page. "
-        "Top navigation bar with Brex logo (left), menu items (Products, Solutions, Resources, Pricing), "
-        "and CTA buttons (Sign in, Get started). "
-        "Hero section with large headline 'The AI-powered spend platform', "
-        "subheadline about controlling spend, and two CTA buttons. "
-        "Clean white background, dark text, green accent color for primary buttons. "
-        "Below the fold: logos of partner companies, feature cards in a grid layout, "
-        "testimonials section, and a footer with links organized in columns."
-    ),
-}
+# Import descriptions from the main env module
+from frontend_replication import PILOT_PAGES
+
+# Build lookup tables from PILOT_PAGES
+DEFAULT_DESCRIPTIONS = {name.split(".")[0].replace("_", "-"): desc for name, _url, desc in PILOT_PAGES}
+# Also add exact name keys
+DEFAULT_DESCRIPTIONS.update({name: desc for name, _url, desc in PILOT_PAGES})
+
+TASK_URLS = {name.split(".")[0].replace("_", "-"): url for name, url, _desc in PILOT_PAGES}
+TASK_URLS.update({name: url for name, url, _desc in PILOT_PAGES})
 
 
 async def run_single_model(
@@ -135,6 +105,7 @@ async def run_single_model(
     task_description: str = "",
     ref_html: str | None = None,
     ref_blocks: list | None = None,
+    image_urls: list[str] | None = None,
 ) -> dict:
     """Run the multi-turn benchmark for a single model on brex.com."""
     logger.info(f"=== Starting {model_alias} ({endpoint['model']}) ===")
@@ -149,17 +120,26 @@ async def run_single_model(
         base_url=endpoint["url"],
     )
 
+    prompt_text = (
+        "Replicate the website shown in the screenshot above.\n\n"
+        f"Website URL (for context only): {task_url}\n\n"
+        f"Description:\n{task_description}\n\n"
+    )
+    if image_urls:
+        prompt_text += "Image URLs from the original website (use these in <img> tags):\n"
+        for img in image_urls:
+            ctx = f" — {img['context']}" if img.get("context") else ""
+            prompt_text += f"  {img['url']}{ctx}\n"
+        prompt_text += "\n"
+    prompt_text += (
+        "Write the complete HTML in a ```html code block."
+    )
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": [
             {"type": "image_url", "image_url": {"url": ref_screenshot_b64}},
-            {"type": "text", "text": (
-                "Replicate the website shown in the screenshot above.\n\n"
-                f"Website URL (for context only): {task_url}\n\n"
-                f"Description:\n{task_description}\n\n"
-                "Write the complete HTML in a ```html code block. "
-                "Use placeholder divs for images/logos with approximate correct dimensions and colors."
-            )},
+            {"type": "text", "text": prompt_text},
         ]},
     ]
 
@@ -309,7 +289,6 @@ async def main():
     parser.add_argument("--ref-html", default=None, help="Path to reference HTML file for Design2Code scoring")
     args = parser.parse_args()
 
-    TASK_URLS = {"linear": "https://linear.app/ai", "brex": "https://www.brex.com/"}
     task_description = args.description or DEFAULT_DESCRIPTIONS.get(args.task, "")
     task_url = args.url or TASK_URLS.get(args.task, "")
     if not task_description:
@@ -366,6 +345,11 @@ async def main():
         )
         logger.info(f"Pre-computed {len(ref_blocks)} reference blocks (cached for all models)")
 
+    # Extract image URLs from reference HTML to pass to models
+    image_urls = extract_image_urls(ref_html) if ref_html else []
+    if image_urls:
+        logger.info(f"Extracted {len(image_urls)} image URLs from reference HTML")
+
     # Run models sequentially (to avoid rate limits and for clean logging)
     results = []
     for model_alias in args.models:
@@ -380,6 +364,7 @@ async def main():
             task_description=task_description,
             ref_html=ref_html,
             ref_blocks=ref_blocks,
+            image_urls=image_urls,
         )
         results.append(result)
 

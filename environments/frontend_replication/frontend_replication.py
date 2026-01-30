@@ -45,17 +45,12 @@ On each turn, write or update your HTML code. You will then see a screenshot of 
 
 Rules:
 - Write everything in a single index.html file (inline CSS and JS are fine)
-- Do NOT use external resources (CDNs, Google Fonts via URL, external images, SVGs from URLs)
+- You may use <img> tags referencing the original image URLs from the website. The page will be rendered with full internet access, so external images will load.
 - Use system fonts: Arial, Helvetica, sans-serif, serif, monospace
 - Match the layout, typography, colors, spacing, and overall structure as closely as possible
 - When you are satisfied with your replication, include the exact string "DONE" at the end of your message
-
-Handling images, logos, and complex visuals:
-- The description marks non-codeable elements with [IMAGE: ...]. These are images, graphics, or complex UI mockups that CANNOT be replicated with HTML/CSS alone.
-- For ANY element marked [IMAGE]: use a simple colored <div> placeholder with approximate dimensions and a matching background color. Add a short text label inside (e.g., "Product Screenshot"). Do NOT attempt to recreate these visually — just use a placeholder box.
-- For logos: use a placeholder div with the brand name as text, styled to approximate size and color.
-- For icons: use simple Unicode characters (e.g., "→", "✓", "⚡") — do NOT draw SVG icons.
-- Focus your effort on layout, text content, colors, and spacing — not on recreating images or complex graphics.
+- Focus your effort on layout, text content, colors, spacing, and correct image placement.
+- For icons: use simple Unicode characters (e.g., "→", "✓", "⚡") or inline SVG.
 
 Output your HTML inside a code block:
 ```html
@@ -96,6 +91,47 @@ def extract_html(message_content: str) -> str | None:
                 return message_content[start : end + 7]
 
     return None
+
+
+TRACKING_DOMAINS = {"facebook.com", "twitter.com", "t.co", "bat.bing.com", "google-analytics.com", "doubleclick.net", "googletagmanager.com"}
+
+
+def extract_image_urls(html: str) -> list[dict[str, str]]:
+    """Extract real image URLs with context from HTML (filters out tracking pixels).
+
+    Returns list of dicts with 'url' and 'context' (alt text or nearby text).
+    """
+    results = []
+    seen = set()
+    for match in re.finditer(r'<img([^>]+)>', html):
+        attrs = match.group(1)
+        src_m = re.search(r'src=["\']?(https?://[^"\'\s>]+)', attrs)
+        if not src_m:
+            continue
+        url = src_m.group(1)
+        if url in seen or any(d in url for d in TRACKING_DOMAINS):
+            continue
+        seen.add(url)
+
+        # Extract context: alt text, aria-label, or title
+        context = ""
+        for attr in ("alt", "aria-label", "title"):
+            m = re.search(rf'{attr}=["\']([^"\']+)["\']', attrs)
+            if m and m.group(1).strip():
+                context = m.group(1).strip()
+                break
+
+        # If no alt, look for nearby heading/text before the <img>
+        if not context:
+            start = max(0, match.start() - 500)
+            before = html[start:match.start()]
+            # Find last heading or paragraph text
+            heading = re.findall(r'<(?:h[1-6]|p|span|figcaption)[^>]*>([^<]{3,80})</', before)
+            if heading:
+                context = heading[-1].strip()
+
+        results.append({"url": url, "context": context})
+    return results
 
 
 def image_to_base64(image_bytes: bytes) -> str:
@@ -316,6 +352,7 @@ class FrontendReplicationEnv(vf.MultiTurnEnv):
         state["render_times"] = []
         state["turn_scores"] = []  # list of ScoringResult dicts per turn
         state["reference_html"] = info.get("reference_html", "")
+        state["image_urls"] = extract_image_urls(state["reference_html"]) if state["reference_html"] else []
 
         return await super().setup_state(state)
 
@@ -341,9 +378,16 @@ class FrontendReplicationEnv(vf.MultiTurnEnv):
                 prompt_text += f"Website URL (for context only): {url}\n\n"
             if description:
                 prompt_text += f"Description:\n{description}\n\n"
+            image_urls = state.get("image_urls", [])
+            if image_urls:
+                prompt_text += "Image URLs from the original website (use these in <img> tags):\n"
+                for img in image_urls:
+                    ctx = f" — {img['context']}" if img.get("context") else ""
+                    prompt_text += f"  {img['url']}{ctx}\n"
+                prompt_text += "\n"
+
             prompt_text += (
                 "Write the complete HTML in a ```html code block. "
-                "Use placeholder divs for images/logos with approximate correct dimensions and colors. "
                 "When you are satisfied with your result, end your message with DONE."
             )
             content_parts.append({"type": "text", "text": prompt_text})
@@ -588,107 +632,139 @@ def load_environment(
     return env
 
 
+PILOT_PAGES = [
+    (
+        "linear.app_ai",
+        "https://linear.app/ai",
+        "Linear AI page: Dark theme (#0A0A0B background, white/light gray text). "
+        "Top nav bar: Linear logo (left), Products, Resources, Pricing, Customers, Max, Contact links, "
+        "then Log in and Sign up buttons (right). "
+        "Hero section: Large bold white headline 'AI workflows for modern product teams', "
+        "gray subtext about streamlining product development. "
+        "Below hero: large dark product screenshot/UI mockup (~1100x600px). "
+        "Next section: Two-column layout — 'Triage Intelligence' label, large heading 'Self-driving product operations', "
+        "body text about automating overhead. Right column: dark UI card (~500x400px). "
+        "Next row: Two feature blocks — 'Find duplicates before they slow you down' (left) and "
+        "'Unlock the value of your backlog' (right), each with dark UI cards. "
+        "Logos section: 'Leading AI companies plan and build with Linear' with company logos (Scale, Replit, Runway, ElevenLabs, Cohere). "
+        "Next section: 'Linear for Agents' — heading 'Delegate and automate work with AI agents', body text, 'Learn more' link. "
+        "Right side: UI card showing 'Assign to...' dropdown. Row of 5 circular dark agent avatar icons with '+' button. "
+        "Two columns: 'Agents for every use case, ready to deploy' and 'Create your own agents' with dark UI cards. "
+        "Next section: 'Other features' — heading 'AI that works where you work'. Two dark cards: "
+        "Linear MCP integration mockup and AI-powered search mockup with descriptions. "
+        "Next row: 'Stay in sync with Pulse updates' (left, Daily Pulse audio player UI) and "
+        "'Enterprise-grade security' (right, shield icon). "
+        "Bottom CTA: 'Plan and build with a little help from AI' with 'Contact sales' and 'Get started' buttons. "
+        "Footer: Linear logo, columns for Features, Product, Company, Resources, Contact. "
+        "Overall: very dark, minimal, polished SaaS aesthetic with subtle dark gray cards on near-black background."
+    ),
+    (
+        "brex.com",
+        "https://www.brex.com/",
+        "Brex homepage: Modern fintech SaaS landing page with clean white background. "
+        "Top nav: Brex logo (left, black text), Products, Solutions, Resources, Pricing menu items, "
+        "Sign in and Get started (green) buttons on right. "
+        "Hero section: Large bold headline 'The AI-powered spend platform' in dark text, "
+        "subheadline about controlling spend with two CTA buttons — 'Get started' (green) and 'Contact sales' (outlined). "
+        "Below hero: A large product UI screenshot showing the Brex dashboard with spend analytics, cards, and transactions. "
+        "Partner logos section: row of company logos (Y Combinator, Coinbase, etc.) on light gray background. "
+        "Feature sections: Cards in a grid layout highlighting key features — corporate cards, expense management, "
+        "travel, bill pay — each with an icon, heading, and short description. "
+        "Testimonials section with customer quotes. "
+        "Footer: dark background with Brex logo, organized link columns (Products, Solutions, Resources, Company), "
+        "legal links, and social icons at bottom."
+    ),
+    (
+        "stripe.com",
+        "https://stripe.com/",
+        "Stripe homepage: Developer-focused payments platform with a bold gradient hero. "
+        "Top nav: Stripe logo (white, left), Products, Solutions, Developers, Resources, Pricing links, "
+        "Contact sales and Sign in buttons (right). All nav text is white on the dark gradient. "
+        "Hero: Deep purple-to-blue gradient background with subtle mesh animation. "
+        "Large white headline 'Financial infrastructure for the internet', descriptive paragraph below, "
+        "two buttons: 'Start now' (white with dark text) and 'Contact sales' (outlined white). "
+        "Right side of hero: code snippet preview showing a Stripe API integration example in a dark code editor. "
+        "Below hero: 'Trusted by millions of companies' with client logos in a grid (Amazon, Google, Shopify, etc.). "
+        "Feature sections: Multiple product cards (Payments, Billing, Connect, Radar) — each with "
+        "an icon, title, description, and a product screenshot or illustration. "
+        "Cards have subtle shadows and rounded corners on a light background. "
+        "Bottom CTA: 'Ready to get started?' with prominent action buttons. "
+        "Footer: light gray with Stripe logo, organized link columns, region selector."
+    ),
+    (
+        "vercel.com",
+        "https://vercel.com/",
+        "Vercel homepage: Frontend cloud platform with dark theme. "
+        "Black background throughout. "
+        "Top nav: Vercel triangle logo (white, left), Products, Solutions, Resources, Enterprise, Docs, Pricing links, "
+        "Contact and Sign Up buttons (right). "
+        "Hero: Very large white text 'Your Web. Your Way.' centered, "
+        "subtitle below about building and deploying the best web experiences. "
+        "Two buttons: 'Start Deploying' (white fill, dark text) and 'Get a Demo' (white outline). "
+        "Below hero: A large visual showing a deploy/build interface or animation — dark card with subtle glow. "
+        "Framework logos section: horizontal row of logos — Next.js, React, Svelte, Nuxt, Astro, etc. — "
+        "in muted white/gray on dark background. "
+        "Feature grid: Dark cards with subtle border, each highlighting a feature (Edge Network, Previews, Analytics, etc.) "
+        "with icons and short descriptions. Some cards contain product screenshots. "
+        "Customer logos section: 'Trusted by the best frontend teams' with company logos. "
+        "Bottom CTA: 'Start your frontend journey' with action buttons. "
+        "Footer: dark with Vercel logo, link columns, social icons."
+    ),
+    (
+        "notion.so",
+        "https://notion.so/",
+        "Notion homepage: All-in-one workspace with a light, clean design. "
+        "White/cream background. "
+        "Top nav: Notion logo (small icon + 'Notion' text, left), Product, Teams, Individuals, Download links, "
+        "Request a demo, Get Notion free (blue) buttons on right. "
+        "Hero: Large centered bold text 'The happiest satisfying all-in-one workspace' (or similar tagline), "
+        "subtitle about writing, planning, and organizing. "
+        "'Get Notion free' blue CTA button centered below. "
+        "Below hero: Large product screenshot showing the Notion interface — a page with text, toggles, databases. "
+        "Trusted-by section: Row of company logos (Figma, Amazon, Toyota, General Electric, etc.) on light background. "
+        "Feature sections: Alternating layout — left text + right illustration, then reversed. "
+        "Topics: Docs, Wikis, Projects, AI features — each with heading, description, and a product mockup image. "
+        "Illustrations use Notion's signature flat/hand-drawn style with warm colors. "
+        "Bottom CTA: 'Get started for free' with action button. "
+        "Footer: light with Notion logo, organized link columns (Product, Download, Resources, Company), legal links."
+    ),
+]
+
+
 def load_pilot_dataset() -> Dataset:
-    """Load the built-in pilot dataset with 5 example tasks."""
-    tasks = [
-        {
+    """Load the built-in pilot dataset from crawled landing pages."""
+    from pathlib import Path as _Path
+
+    pages_dir = _Path(__file__).parent.parent.parent / "landing pages"
+    tasks = []
+
+    for name, url, description in PILOT_PAGES:
+        html_path = pages_dir / f"{name}.html"
+        png_path = pages_dir / f"{name}.png"
+
+        ref_html = ""
+        ref_screenshot_b64 = ""
+
+        if html_path.exists():
+            ref_html = html_path.read_text()
+        else:
+            logger.warning(f"Missing HTML for {name}: {html_path}")
+
+        if png_path.exists():
+            ref_screenshot_b64 = image_to_base64(png_path.read_bytes())
+        else:
+            logger.warning(f"Missing screenshot for {name}: {png_path}")
+
+        tasks.append({
             "question": "Replicate the following website.",
             "answer": "",
             "info": json.dumps({
-                "url": "https://www.brex.com/",
-                "description": (
-                    "Brex homepage: Modern fintech SaaS landing page. "
-                    "Top navigation bar with Brex logo (left), menu items (Products, Solutions, Resources, Pricing), "
-                    "and CTA buttons (Sign in, Get started). "
-                    "Hero section with large headline 'The AI-powered spend platform', "
-                    "subheadline about controlling spend, and two CTA buttons. "
-                    "Clean white background, dark text, green accent color for primary buttons. "
-                    "Below the fold: logos of partner companies, feature cards in a grid layout."
-                ),
+                "url": url,
+                "description": description,
+                "reference_screenshot": ref_screenshot_b64,
+                "reference_html": ref_html,
                 "viewport": {"width": 1280, "height": 800},
-                "sections": ["nav", "hero", "logos", "features"],
-                "reference_screenshot": "",
             }),
-        },
-        {
-            "question": "Replicate the following website.",
-            "answer": "",
-            "info": json.dumps({
-                "url": "https://stripe.com/",
-                "description": (
-                    "Stripe homepage: Developer-focused payments platform. "
-                    "Dark gradient header/hero with animated gradient mesh background. "
-                    "Navigation: Stripe logo, Products, Solutions, Developers, Resources, Pricing. "
-                    "Hero: 'Financial infrastructure for the internet' headline in white, "
-                    "descriptive paragraph, 'Start now' and 'Contact sales' buttons. "
-                    "Right side has a code snippet preview showing API integration. "
-                    "Below: client logos (Amazon, Google, etc.), feature sections with icons."
-                ),
-                "viewport": {"width": 1280, "height": 800},
-                "sections": ["nav", "hero", "code-preview", "logos", "features"],
-                "reference_screenshot": "",
-            }),
-        },
-        {
-            "question": "Replicate the following website.",
-            "answer": "",
-            "info": json.dumps({
-                "url": "https://linear.app/",
-                "description": (
-                    "Linear homepage: Project management tool for software teams. "
-                    "Dark theme (near-black background, white/gray text). "
-                    "Minimal nav: Linear logo, Features, Method, Customers, Changelog, Pricing, Sign up/Log in. "
-                    "Hero: Bold headline 'Linear is a purpose-built tool for planning and building products', "
-                    "with subtle animated gradient behind text. "
-                    "CTA: 'Get started' button with subtle glow effect. "
-                    "Below: product screenshot showing the Linear interface (use placeholder). "
-                    "Feature sections with icons and descriptions in a grid."
-                ),
-                "viewport": {"width": 1280, "height": 800},
-                "sections": ["nav", "hero", "product-screenshot", "features"],
-                "reference_screenshot": "",
-            }),
-        },
-        {
-            "question": "Replicate the following website.",
-            "answer": "",
-            "info": json.dumps({
-                "url": "https://vercel.com/",
-                "description": (
-                    "Vercel homepage: Frontend cloud platform. "
-                    "Dark theme with black background. "
-                    "Nav: Vercel triangle logo, Features, Customers, Enterprise, Docs, Pricing, Blog. "
-                    "Hero: 'Your complete platform for the web' in large white text. "
-                    "Subtitle about frontend experience. Two buttons: 'Start Deploying' (white) and 'Get a Demo' (outline). "
-                    "Below hero: animated deploy visualization (use placeholder). "
-                    "Framework logos section: Next.js, React, Svelte, Nuxt, etc. "
-                    "Feature grid with dark cards, subtle borders."
-                ),
-                "viewport": {"width": 1280, "height": 800},
-                "sections": ["nav", "hero", "deploy-viz", "frameworks", "features"],
-                "reference_screenshot": "",
-            }),
-        },
-        {
-            "question": "Replicate the following website.",
-            "answer": "",
-            "info": json.dumps({
-                "url": "https://notion.so/",
-                "description": (
-                    "Notion homepage: All-in-one workspace. "
-                    "Light/white background with clean design. "
-                    "Nav: Notion logo (icon + 'Notion' text), Product (dropdown), Download, Solutions, Resources, Pricing, "
-                    "Request a demo, Get Notion free. "
-                    "Hero: 'Write, plan, share. With AI at your side.' large centered text. "
-                    "Subtitle about getting work done. 'Get Notion free' primary button. "
-                    "Below: large product screenshot showing the Notion interface (use placeholder). "
-                    "Trusted by logos: Figma, Amazon, Toyota, etc."
-                ),
-                "viewport": {"width": 1280, "height": 800},
-                "sections": ["nav", "hero", "product-screenshot", "logos"],
-                "reference_screenshot": "",
-            }),
-        },
-    ]
+        })
 
     return Dataset.from_list(tasks)
