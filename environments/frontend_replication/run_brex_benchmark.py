@@ -153,17 +153,10 @@ async def run_single_model(
         turn_start = time.time()
 
         try:
-            # OpenAI models require max_completion_tokens instead of max_tokens
-            token_param = (
-                {"max_completion_tokens": 16384}
-                if "openai.com" in endpoint["url"]
-                else {"max_tokens": 16384}
-            )
             response = await client.chat.completions.create(
                 model=endpoint["model"],
                 messages=messages,
                 temperature=0.7,
-                **token_param,
             )
         except Exception as e:
             logger.error(f"  [{model_alias}] API error on turn {turn}: {e}")
@@ -203,7 +196,7 @@ async def run_single_model(
             ref_img, gen_img,
             ref_html=ref_html, gen_html=html,
             ref_blocks=ref_blocks,
-            use_clip=False,
+            use_clip=True,
             render_fn=render_html_playwright,
         )
 
@@ -215,6 +208,7 @@ async def run_single_model(
             "text": result.text_score,
             "position": result.position_score,
             "color": result.color_score,
+            "clip": result.clip_score,
             "ref_blocks": result.num_ref_blocks,
             "gen_blocks": result.num_gen_blocks,
             "matched": result.num_matched,
@@ -285,6 +279,7 @@ async def main():
     )
     parser.add_argument("--max-turns", type=int, default=5, help="Max turns per model")
     parser.add_argument("--save-results", action="store_true", help="Save HTML + screenshots per turn")
+    parser.add_argument("--save-dir", default="linear_benchmark_outputs", help="Directory to save per-turn outputs")
     parser.add_argument("--output", default="benchmark_results.json", help="Output JSON path")
     parser.add_argument("--ref-html", default=None, help="Path to reference HTML file for Design2Code scoring")
     args = parser.parse_args()
@@ -320,7 +315,7 @@ async def main():
             logger.error(f"Unknown model alias: {model}. Available: {', '.join(endpoints.keys())}")
             sys.exit(1)
 
-    save_dir = Path("linear_benchmark_outputs") if args.save_results else None
+    save_dir = Path(args.save_dir) if args.save_results else None
     if save_dir:
         save_dir.mkdir(exist_ok=True)
 

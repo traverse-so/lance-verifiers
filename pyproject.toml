@@ -47,6 +47,8 @@ dependencies = [
     "typing_extensions; python_version < '3.12'",
     "wget>=3.2",
     "gepa",
+    "transformers>=5.0.0",
+    "torch>=2.8.0",
 ]
 
 [tool.uv.sources]

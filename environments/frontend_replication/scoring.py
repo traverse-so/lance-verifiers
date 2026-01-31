@@ -563,8 +563,12 @@ def compute_clip_score(
         ref_inputs = processor(images=ref_pil, return_tensors="pt")
         gen_inputs = processor(images=gen_pil, return_tensors="pt")
 
-        ref_features = model.get_image_features(**ref_inputs)
-        gen_features = model.get_image_features(**gen_inputs)
+        ref_out = model.get_image_features(pixel_values=ref_inputs["pixel_values"])
+        gen_out = model.get_image_features(pixel_values=gen_inputs["pixel_values"])
+
+        # Handle both tensor and BaseModelOutputWithPooling returns
+        ref_features = ref_out if isinstance(ref_out, torch.Tensor) else ref_out.pooler_output
+        gen_features = gen_out if isinstance(gen_out, torch.Tensor) else gen_out.pooler_output
 
         # Normalize
         ref_features = ref_features / ref_features.norm(dim=-1, keepdim=True)
