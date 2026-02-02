@@ -534,22 +534,37 @@ def compute_color_score(
     return sum(scores) / len(ref_blocks) if ref_blocks else 0.0
 
 
-_clip_model = None
-_clip_processor = None
+_dreamsim_model = None
+_dreamsim_preprocess = None
 
 
-def _get_clip_model():
-    """Lazy-load and cache CLIP model as module-level singleton."""
-    global _clip_model, _clip_processor
-    if _clip_model is None:
+def _get_dreamsim_model():
+    """Lazy-load and cache DreamSim model as module-level singleton."""
+    global _dreamsim_model, _dreamsim_preprocess
+    if _dreamsim_model is None:
         import torch
-        from transformers import CLIPModel, CLIPProcessor
+        from dreamsim import dreamsim
 
-        model_name = "openai/clip-vit-base-patch32"
-        _clip_processor = CLIPProcessor.from_pretrained(model_name)
-        _clip_model = CLIPModel.from_pretrained(model_name)
-        _clip_model.eval()
-    return _clip_model, _clip_processor
+        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        _dreamsim_model, _dreamsim_preprocess = dreamsim(
+            pretrained=True, device=device, dreamsim_type="ensemble",
+        )
+    return _dreamsim_model, _dreamsim_preprocess
+
+
+def _dreamsim_distance(ref_pil: Image.Image, gen_pil: Image.Image) -> float:
+    """Compute DreamSim perceptual distance between two PIL images. Returns distance in [0, ~1]."""
+    import torch
+
+    model, preprocess = _get_dreamsim_model()
+    device = next(model.parameters()).device
+
+    with torch.no_grad():
+        ref_t = preprocess(ref_pil).to(device)
+        gen_t = preprocess(gen_pil).to(device)
+        dist = model(ref_t, gen_t).item()
+
+    return dist
 
 
 def compute_clip_score(
@@ -559,46 +574,65 @@ def compute_clip_score(
     gen_blocks: list[VisualBlock],
 ) -> float:
     """
-    CLIP score: cosine similarity of CLIP embeddings on inpainted screenshots.
-    Images are inpainted to remove photo-like regions before comparison.
+    Visual similarity score using DreamSim (ensemble of CLIP + OpenCLIP + DINO).
+
+    Tiles both pages into roughly-square sections and compares corresponding
+    tiles so that local details (images, icons, UI elements) are visible at
+    DreamSim's 224x224 input resolution. Missing tiles (generated page shorter
+    than reference) are penalized as maximum distance.
+
+    Returns similarity in [0, 1] (1 = identical).
     """
     try:
         import torch
     except ImportError:
-        logger.warning("transformers/torch not available, returning CLIP score 0.0")
+        logger.warning("torch not available, returning visual score 0.0")
         return 0.0
 
-    # Inpaint both images to remove photo regions
-    ref_inpainted = inpaint_image_regions(ref_image, ref_blocks)
-    gen_inpainted = inpaint_image_regions(gen_image, gen_blocks)
+    # Convert BGR → RGB PIL
+    ref_pil = Image.fromarray(cv2.cvtColor(ref_image, cv2.COLOR_BGR2RGB))
+    gen_pil = Image.fromarray(cv2.cvtColor(gen_image, cv2.COLOR_BGR2RGB))
 
-    # Convert to PIL
-    ref_pil = Image.fromarray(cv2.cvtColor(ref_inpainted, cv2.COLOR_BGR2RGB))
-    gen_pil = Image.fromarray(cv2.cvtColor(gen_inpainted, cv2.COLOR_BGR2RGB))
+    ref_w, ref_h = ref_pil.size
+    gen_w, gen_h = gen_pil.size
 
-    model, processor = _get_clip_model()
+    # Tile height ≈ page width so tiles are roughly square — gives DreamSim
+    # enough resolution to distinguish real images from gray placeholders.
+    tile_h = ref_w  # typically 1280
 
-    with torch.no_grad():
-        ref_inputs = processor(images=ref_pil, return_tensors="pt")
-        gen_inputs = processor(images=gen_pil, return_tensors="pt")
+    # Slice reference into tiles
+    ref_tiles = []
+    y = 0
+    while y < ref_h:
+        ref_tiles.append(ref_pil.crop((0, y, ref_w, min(y + tile_h, ref_h))))
+        y += tile_h
 
-        ref_out = model.get_image_features(pixel_values=ref_inputs["pixel_values"])
-        gen_out = model.get_image_features(pixel_values=gen_inputs["pixel_values"])
+    # Slice generated page using proportional positioning so tiles align
+    # to the same relative vertical position even if page heights differ.
+    n_ref = len(ref_tiles)
+    tile_dists = []
+    for i in range(n_ref):
+        # Proportional y range in generated page
+        frac_start = i / n_ref
+        frac_end = (i + 1) / n_ref
+        gy_start = int(frac_start * gen_h)
+        gy_end = int(frac_end * gen_h)
 
-        # Handle both tensor and BaseModelOutputWithPooling returns
-        ref_features = ref_out if isinstance(ref_out, torch.Tensor) else ref_out.pooler_output
-        gen_features = gen_out if isinstance(gen_out, torch.Tensor) else gen_out.pooler_output
+        if gy_end <= gy_start or gy_end > gen_h:
+            # Generated page is shorter — penalize with max distance
+            tile_dists.append(1.0)
+            continue
 
-        # Normalize
-        ref_features = ref_features / ref_features.norm(dim=-1, keepdim=True)
-        gen_features = gen_features / gen_features.norm(dim=-1, keepdim=True)
+        gen_tile = gen_pil.crop((0, gy_start, gen_w, gy_end))
+        tile_dists.append(_dreamsim_distance(ref_tiles[i], gen_tile))
 
-        # Cosine similarity
-        similarity = (ref_features @ gen_features.T).item()
+    # Average tile distance
+    avg_dist = sum(tile_dists) / len(tile_dists) if tile_dists else 0.5
 
-    # CLIP image-image cosine similarity is typically in [0.5, 1.0].
-    # Clamp to [0, 1] rather than rescaling from [-1, 1] which would
-    # compress the useful range and lose discriminative power.
+    # Convert distance → similarity. DreamSim distances are typically [0, ~0.8]
+    # for webpage comparisons. Use exponential decay for smooth [0,1] mapping.
+    similarity = math.exp(-2.0 * avg_dist)
+
     return max(0.0, min(1.0, similarity))
 
 
