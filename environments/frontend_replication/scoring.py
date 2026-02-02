@@ -315,21 +315,40 @@ def compute_size_score(
     matches: list[tuple[int, int, float]],
 ) -> float:
     """
-    Size score: sum of matched block areas / sum of all block areas.
+    Size score: coverage × size-fidelity of matched pairs.
 
-    Design2Code formula: matched_area_sum / total_area_sum across both ref and gen.
+    Two components:
+    1. Coverage: fraction of reference area that was matched (penalizes missing content)
+    2. Fidelity: for matched pairs, how similar their sizes are (IoU of width×height)
+
+    This avoids penalizing models that structure HTML differently but produce
+    visually equivalent output (fewer/larger blocks vs many small blocks).
     """
     if not ref_blocks and not gen_blocks:
         return 1.0
     if not ref_blocks or not gen_blocks:
         return 0.0
 
-    matched_area = 0.0
-    for r, c, _ in matches:
-        matched_area += ref_blocks[r].area + gen_blocks[c].area
+    # Coverage: what fraction of reference area did we match?
+    ref_total_area = sum(b.area for b in ref_blocks)
+    matched_ref_area = sum(ref_blocks[r].area for r, c, _ in matches)
+    coverage = matched_ref_area / ref_total_area if ref_total_area > 0 else 0.0
 
-    total_area = sum(b.area for b in ref_blocks) + sum(b.area for b in gen_blocks)
-    return matched_area / total_area if total_area > 0 else 0.0
+    # Fidelity: for matched pairs, how close are their sizes?
+    if not matches:
+        return 0.0
+    fidelity_sum = 0.0
+    weight_sum = 0.0
+    for r, c, _ in matches:
+        ra = ref_blocks[r].area
+        ga = gen_blocks[c].area
+        if ra + ga > 0:
+            # IoU-style: min/max gives 1.0 for identical sizes, <1 for mismatches
+            fidelity_sum += min(ra, ga) / max(ra, ga) * ra
+            weight_sum += ra
+    fidelity = fidelity_sum / weight_sum if weight_sum > 0 else 0.0
+
+    return coverage * fidelity
 
 
 def compute_text_score(
@@ -353,7 +372,7 @@ def compute_text_score(
             sim = difflib.SequenceMatcher(None, ref_text, gen_text).ratio()
             scores.append(sim)
 
-    return sum(scores) / len(scores) if scores else 0.0
+    return sum(scores) / len(ref_blocks) if ref_blocks else 0.0
 
 
 def compute_position_score(
@@ -378,7 +397,7 @@ def compute_position_score(
         dist = max(dx, dy)
         scores.append(max(0.0, 1.0 - dist))
 
-    return sum(scores) / len(scores)
+    return sum(scores) / len(ref_blocks) if ref_blocks else 0.0
 
 
 def rgb_to_lab(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
@@ -512,7 +531,7 @@ def compute_color_score(
         similarity = max(0.0, 1.0 - (delta_e / 100.0))
         scores.append(similarity)
 
-    return sum(scores) / len(scores)
+    return sum(scores) / len(ref_blocks) if ref_blocks else 0.0
 
 
 _clip_model = None
